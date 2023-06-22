@@ -26,7 +26,7 @@ from keras.metrics import base_metric
 class BinaryFBetaScore(base_metric.Metric):
     """Computes F-Beta score for a binary classification problem.
 
-    This is the weighted harmonic mean of precision and recall.
+    This is the harmonic mean of precision and recall.
     Its output range is `[0, 1]`. It is designed for binary classification only.
 
     It is defined as:
@@ -41,8 +41,7 @@ class BinaryFBetaScore(base_metric.Metric):
             in the harmonic mean between precision and recall (see pseudocode
             equation above). Default value is 1.
         threshold: Elements of `y_pred` greater than `threshold` are
-            converted to be 1, and the rest 0. If `threshold` is
-            `None`, the argmax of `y_pred` is converted to 1, and the rest to 0.
+            converted to be 1, and the rest 0.
         name: Optional. String name of the metric instance.
         dtype: Optional. Data type of the metric result.
 
@@ -52,8 +51,8 @@ class BinaryFBetaScore(base_metric.Metric):
     Example:
 
     >>> metric = tf.keras.metrics.BinaryFBetaScore(beta=2.0, threshold=0.5)
-    >>> y_true = np.array([1, 0, 0, 1, 1], np.int32)
-    >>> y_pred = np.array([0.2, 0.2, 0.7, 0.6, 0.55], np.float32)
+    >>> y_true = np.array([[1], [0], [0], [1], [1]], np.int32)
+    >>> y_pred = np.array([[0.2], [0.2], [0.7], [0.6], [0.55]], np.float32)
     >>> metric.update_state(y_true, y_pred)
     >>> result = metric.result()
     >>> result.numpy()
@@ -63,8 +62,8 @@ class BinaryFBetaScore(base_metric.Metric):
     @dtensor_utils.inject_mesh
     def __init__(
         self,
+        threshold,
         beta=1.0,
-        threshold=None,
         name="binary_fbeta_score",
         dtype=None,
     ):
@@ -97,6 +96,12 @@ class BinaryFBetaScore(base_metric.Metric):
                     "It should verify 0 < threshold <= 1. "
                     f"Received: threshold={threshold}"
                 )
+        else:
+            raise ValueError(
+                "Invalid `threshold` argument value. "
+                "It should not be None. "
+                f"Received: threshold={threshold}"
+            )
 
         self.beta = beta
         self.threshold = threshold
@@ -135,40 +140,25 @@ class BinaryFBetaScore(base_metric.Metric):
         self.true_positives = _add_zeros_weight("true_positives")
         self.false_positives = _add_zeros_weight("false_positives")
         self.false_negatives = _add_zeros_weight("false_negatives")
-        self.intermediate_weights = _add_zeros_weight("intermediate_weights")
         self.built = True
 
-    def update_state(self, y_true, y_pred, sample_weight=None):
+    def update_state(self, y_true, y_pred):
         y_true = tf.convert_to_tensor(y_true, dtype=self.dtype)
         y_pred = tf.convert_to_tensor(y_pred, dtype=self.dtype)
         if not self.built:
             self.build(y_true.shape, y_pred.shape)
 
-        if self.threshold is None:
-            threshold = tf.reduce_max(y_pred, axis=-1, keepdims=True)
-            # make sure [0, 0, 0] doesn't become [1, 1, 1]
-            # Use abs(x) > eps, instead of x != 0 to check for zero
-            y_pred = tf.logical_and(y_pred >= threshold, tf.abs(y_pred) > 1e-9)
-        else:
-            y_pred = y_pred > self.threshold
+        y_pred = y_pred > self.threshold
         y_pred = tf.cast(y_pred, dtype=self.dtype)
 
-        def _weighted_sum(val, sample_weight):
-            if sample_weight is not None:
-                val = tf.math.multiply(val, tf.expand_dims(sample_weight, 1))
-            return tf.reduce_sum(val, axis=self.axis)
-
         self.true_positives.assign_add(
-            _weighted_sum(y_pred * y_true, sample_weight)
+            tf.reduce_sum(y_pred * y_true, axis=0)
         )
         self.false_positives.assign_add(
-            _weighted_sum(y_pred * (1 - y_true), sample_weight)
+            tf.reduce_sum(y_pred * (1 - y_true), axis=0)
         )
         self.false_negatives.assign_add(
-            _weighted_sum((1 - y_pred) * y_true, sample_weight)
-        )
-        self.intermediate_weights.assign_add(
-            _weighted_sum(y_true, sample_weight)
+            tf.reduce_sum((1 - y_pred) * y_true, axis=0)
         )
 
     def result(self):
@@ -184,15 +174,7 @@ class BinaryFBetaScore(base_metric.Metric):
         mean = tf.math.divide_no_nan(mul_value, add_value)
         f1_score = mean * (1 + tf.math.square(self.beta))
 
-        if self.average == "weighted":
-            weights = tf.math.divide_no_nan(
-                self.intermediate_weights,
-                tf.reduce_sum(self.intermediate_weights),
-            )
-            f1_score = tf.reduce_sum(f1_score * weights)
-
-        elif self.average is not None:  # [micro, macro]
-            f1_score = tf.reduce_mean(f1_score)
+        f1_score = tf.reduce_mean(f1_score)
 
         return f1_score
 
@@ -200,7 +182,6 @@ class BinaryFBetaScore(base_metric.Metric):
         """Returns the serializable config of the metric."""
 
         config = {
-            "average": self.average,
             "beta": self.beta,
             "threshold": self.threshold,
         }
@@ -215,11 +196,10 @@ class BinaryFBetaScore(base_metric.Metric):
 
 @keras_export("keras.metrics.BinaryF1Score")
 class BinaryF1Score(BinaryFBetaScore):
-    r"""Computes F-1 Score.
+    r"""Computes F-1 Score for a binary classification problem.
 
     This is the harmonic mean of precision and recall.
-    Its output range is `[0, 1]`. It works for both multi-class
-    and multi-label classification.
+    Its output range is `[0, 1]`. It is designed for binary classification only.
 
     It is defined as:
 
@@ -228,24 +208,8 @@ class BinaryF1Score(BinaryFBetaScore):
     ```
 
     Args:
-        average: Type of averaging to be performed on data.
-            Acceptable values are `None`, `"micro"`, `"macro"`
-            and `"weighted"`. Default value is `None`.
-            If `None`, no averaging is performed and `result()` will return
-            the score for each class.
-            If `"micro"`, compute metrics globally by counting the total
-            true positives, false negatives and false positives.
-            If `"macro"`, compute metrics for each label,
-            and return their unweighted mean.
-            This does not take label imbalance into account.
-            If `"weighted"`, compute metrics for each label,
-            and return their average weighted by support
-            (the number of true instances for each label).
-            This alters `"macro"` to account for label imbalance.
-            It can result in an score that is not between precision and recall.
         threshold: Elements of `y_pred` greater than `threshold` are
-            converted to be 1, and the rest 0. If `threshold` is
-            `None`, the argmax of `y_pred` is converted to 1, and the rest to 0.
+            converted to be 1, and the rest 0.
         name: Optional. String name of the metric instance.
         dtype: Optional. Data type of the metric result.
 
@@ -255,28 +219,22 @@ class BinaryF1Score(BinaryFBetaScore):
     Example:
 
     >>> metric = tf.keras.metrics.F1Score(threshold=0.5)
-    >>> y_true = np.array([[1, 1, 1],
-    ...                    [1, 0, 0],
-    ...                    [1, 1, 0]], np.int32)
-    >>> y_pred = np.array([[0.2, 0.6, 0.7],
-    ...                    [0.2, 0.6, 0.6],
-    ...                    [0.6, 0.8, 0.0]], np.float32)
+    >>> y_true = np.array([[1], [0], [0], [1], [1]], np.int32)
+    >>> y_pred = np.array([[0.2], [0.2], [0.7], [0.6], [0.55]], np.float32)
     >>> metric.update_state(y_true, y_pred)
     >>> result = metric.result()
     >>> result.numpy()
-    array([0.5      , 0.8      , 0.6666667], dtype=float32)
+    0.6666666666667
     """
 
     @dtensor_utils.inject_mesh
     def __init__(
         self,
-        average=None,
-        threshold=None,
+        threshold,
         name="f1_score",
         dtype=None,
     ):
         super().__init__(
-            average=average,
             beta=1.0,
             threshold=threshold,
             name=name,
