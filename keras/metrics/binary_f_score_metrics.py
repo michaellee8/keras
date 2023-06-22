@@ -142,7 +142,7 @@ class BinaryFBetaScore(base_metric.Metric):
         self.false_negatives = _add_zeros_weight("false_negatives")
         self.built = True
 
-    def update_state(self, y_true, y_pred):
+    def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.convert_to_tensor(y_true, dtype=self.dtype)
         y_pred = tf.convert_to_tensor(y_pred, dtype=self.dtype)
         if not self.built:
